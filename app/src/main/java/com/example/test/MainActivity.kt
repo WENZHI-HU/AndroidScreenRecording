@@ -23,6 +23,8 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
 import androidx.activity.enableEdgeToEdge
@@ -30,7 +32,17 @@ import androidx.activity.result.ActivityResultLauncher
 import java.io.File
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import com.example.test.ui.theme.buttonTextStyle
+import com.example.test.ui.theme.buttonTextStyle
+
+import androidx.activity.compose.setContent
+import com.example.test.ui.theme.TestTheme
+import androidx.activity.compose.setContent
+import com.example.test.ui.theme.TestTheme
 
 class MainActivity : ComponentActivity() {
     private lateinit var mediaProjectionManager: MediaProjectionManager
@@ -39,41 +51,53 @@ class MainActivity : ComponentActivity() {
     private var virtualDisplay: VirtualDisplay? = null
     private lateinit var screenCaptureLauncher: ActivityResultLauncher<Intent>
     private lateinit var requestPermissionLauncher: ActivityResultLauncher<String>  // Updated to single permission request
-
+    private var recordingStartTime: Long = 0
+    private val RECORDING_LIMIT = 180000L
+    private val recordingHandler = Handler(Looper.getMainLooper())
+    private val restartRecordingRunnable = Runnable { restartRecording() }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         // Initialize the permission launcher for RECORD_AUDIO
-        requestPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            if (!isGranted) {
-                Log.e("Permissions", "Permission not granted for recording audio.")
+        requestPermissionLauncher =
+            registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+                if (!isGranted) {
+                    Log.e("Permissions", "Permission not granted for recording audio.")
+                }
             }
-        }
 
         // Request RECORD_AUDIO permission
         requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
 
+
         // Initialize mediaProjectionManager
-        mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjectionManager =
+            getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
         // Setup screen capture intent response handling
-        screenCaptureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK && result.data != null) {
-                mediaProjection = mediaProjectionManager.getMediaProjection(result.resultCode, result.data!!).apply {
-                    // Register a callback to handle user revocation and cleanup
-                    registerCallback(object : MediaProjection.Callback() {
-                        override fun onStop() {
-                            stopRecording()
-                            mediaProjection = null
-                        }
-                    }, null)
+        screenCaptureLauncher =
+            registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode == RESULT_OK && result.data != null) {
+                    mediaProjection =
+                        mediaProjectionManager.getMediaProjection(result.resultCode, result.data!!)
+                            .apply {
+                                // Register a callback to handle user revocation and cleanup
+                                registerCallback(object : MediaProjection.Callback() {
+                                    override fun onStop() {
+                                        stopRecording()
+                                        mediaProjection = null
+                                    }
+                                }, null)
+                            }
+                    startRecording() // Start recording now that everything is set up
+                } else {
+                    Log.e(
+                        "ScreenCapture",
+                        "Permission not granted or failed to retrieve projection."
+                    )
                 }
-                startRecording() // Start recording now that everything is set up
-            } else {
-                Log.e("ScreenCapture", "Permission not granted or failed to retrieve projection.")
             }
-        }
 
 
         setContent {
@@ -85,7 +109,8 @@ class MainActivity : ComponentActivity() {
                         onStartRecording = {
                             val serviceIntent = Intent(this, RecordingService::class.java)
                             ContextCompat.startForegroundService(this, serviceIntent)
-                            val screenCaptureIntent = mediaProjectionManager.createScreenCaptureIntent()
+                            val screenCaptureIntent =
+                                mediaProjectionManager.createScreenCaptureIntent()
                             screenCaptureLauncher.launch(screenCaptureIntent)
                         },
                         onStopRecording = { stopRecording() }
@@ -96,20 +121,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupMediaRecorder() {
-        val resolver = contentResolver
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, "screen_record_${System.currentTimeMillis()}.mp4")
-            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/ScreenRecordings")
-        }
+        val dateFormat = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+        val fileName = "screen_record_${dateFormat.format(Date())}.mp4"
+        val storageDir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)?.absolutePath + "/ScreenRecordings"
 
-        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+        File(storageDir).mkdirs()  // 确保目录存在
+
+        val filePath = "$storageDir/$fileName"
 
         mediaRecorder = MediaRecorder().apply {
+            setOnErrorListener { _, what, extra ->
+                Log.e("MediaRecorder", "Error occurred: What $what, Extra $extra")
+                stopRecording()
+            }
             setAudioSource(MediaRecorder.AudioSource.MIC)
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setOutputFile(uri?.let { resolver.openFileDescriptor(it, "rw")?.fileDescriptor })
+            setOutputFile(filePath)
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             setVideoSize(1280, 720)
@@ -119,19 +147,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
     private fun startRecording() {
-        Log.d("Recording", "Preparing to start recording.")
         setupMediaRecorder()
-        val metrics = resources.displayMetrics
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "MainActivity",
-            metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            mediaRecorder!!.surface, null, null
-        )
+        if (virtualDisplay == null) {
+            val metrics = resources.displayMetrics
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "MainActivity",
+                metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mediaRecorder!!.surface, null, null
+            )
+        }
         mediaRecorder?.start()
+        recordingStartTime = System.currentTimeMillis()
         Log.d("Recording", "Recording started.")
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (System.currentTimeMillis() - recordingStartTime >= RECORDING_LIMIT) {
+                restartRecording()
+            }
+        }, RECORDING_LIMIT)
     }
+
 
     private fun stopRecording() {
         Log.d("Recording", "Stopping the recording.")
@@ -141,35 +178,79 @@ class MainActivity : ComponentActivity() {
             release()
         }
         mediaRecorder = null
-        virtualDisplay?.release()
-        virtualDisplay = null
+        if (virtualDisplay != null) {
+            virtualDisplay?.release()
+            virtualDisplay = null
+        }
         mediaProjection?.stop()
         mediaProjection = null
         Log.d("Recording", "Recording stopped.")
     }
-}
 
-@Composable
-fun Greeting(name: String, modifier: Modifier, onStartRecording: () -> Unit, onStopRecording: () -> Unit) {
-    Column(
-        modifier = modifier,
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(text = "Hello $name!")
-        Button(onClick = onStartRecording) {
-            Text("开始录屏")
+    private fun restartRecording() {
+        mediaRecorder?.apply {
+            stop()
+            reset()
+            release()
+        }  // Stop without releasing the virtual display
+        setupMediaRecorder() // 重新设置 MediaRecorder
+
+        val metrics = resources.displayMetrics
+        if (virtualDisplay == null) {
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "MainActivity",
+                metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mediaRecorder!!.surface, null, null
+            )
+        } else {
+            virtualDisplay?.surface = mediaRecorder!!.surface
         }
-        Button(onClick = onStopRecording) {
-            Text("停止录屏")
+
+        mediaRecorder?.start()
+        recordingHandler.postDelayed({
+            if (System.currentTimeMillis() - recordingStartTime >= RECORDING_LIMIT) {
+                restartRecording()
+            }
+        }, RECORDING_LIMIT)
+// 重新启动录制
+    }
+
+    @Composable
+    fun Greeting(
+        name: String,
+        modifier: Modifier,
+        onStartRecording: () -> Unit,
+        onStopRecording: () -> Unit
+    ) {
+        Column(
+            modifier = modifier,
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(text = "Hello $name!")
+            Button(onClick = onStartRecording) {
+                Text("开始录屏",style = buttonTextStyle)
+            }
+            Button(onClick = {
+                onStopRecording()
+                virtualDisplay?.release()
+                virtualDisplay = null
+            }) {
+                Text("停止录屏",style = buttonTextStyle)
+            }
         }
     }
-}
 
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    TestTheme {
-        Greeting("Android", Modifier.fillMaxSize(), {}, {})
+
+
+
+
+    @Preview(showBackground = true)
+    @Composable
+    fun GreetingPreview() {
+        TestTheme {
+            Greeting("Android", Modifier.fillMaxSize(), {}, {})
+        }
     }
 }

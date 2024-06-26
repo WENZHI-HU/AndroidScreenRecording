@@ -24,7 +24,19 @@ class RecordingService : Service() {
             .build()
 
         startForeground(1, notification)
+
+        // Start recording or handle recording logic
+        startRecordingOrHandle()
+
         return START_STICKY
+    }
+
+    private fun startRecordingOrHandle() {
+        try {
+            // Your recording start logic here
+        } catch (e: Exception) {
+            stopSelf() // stop service if recording fails to start
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? {
@@ -43,4 +55,3 @@ class RecordingService : Service() {
         }
     }
 }
-
