@@ -22,6 +22,7 @@ import android.hardware.display.VirtualDisplay
 import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -113,7 +114,8 @@ class MainActivity : ComponentActivity() {
                                 mediaProjectionManager.createScreenCaptureIntent()
                             screenCaptureLauncher.launch(screenCaptureIntent)
                         },
-                        onStopRecording = { stopRecording() }
+                        onStopRecording = { stopRecording() },
+                        onOpenLink = { openLink() }
                     )
                 }
             }
@@ -221,7 +223,8 @@ class MainActivity : ComponentActivity() {
         name: String,
         modifier: Modifier,
         onStartRecording: () -> Unit,
-        onStopRecording: () -> Unit
+        onStopRecording: () -> Unit,
+        onOpenLink: () -> Unit
     ) {
         Column(
             modifier = modifier,
@@ -239,7 +242,17 @@ class MainActivity : ComponentActivity() {
             }) {
                 Text("停止录屏",style = buttonTextStyle)
             }
+            Button(onClick = onOpenLink) {  // 添加一个新的按钮用于打开链接
+                Text("打开链接", style = buttonTextStyle)
+            }
         }
+    }
+    private fun openLink() {
+        val url = "https://zhuayumao.cn/Download"  // 将 URL 替换为你想要打开的链接
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            data = Uri.parse(url)
+        }
+        startActivity(intent)
     }
 
 
@@ -250,7 +263,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun GreetingPreview() {
         TestTheme {
-            Greeting("Android", Modifier.fillMaxSize(), {}, {})
+            Greeting("Android", Modifier.fillMaxSize(), {}, {},{})
         }
     }
 }
